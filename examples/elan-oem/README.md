@@ -1,29 +1,22 @@
 # ELAN 04f3:0c28 OEM matcher experiment
 
-Standalone touch capture, enrollment, and verification for the 96×96 ELAN reader.
-The Windows matching engine runs natively on x86-64 Linux; Wine is not used.
-This directory is independent of the Meson build and does not install or change
-libfprint, fprintd, or login configuration.
+Captures single touches on the 96×96 ELAN 04f3:0c28 reader and enrolls/verifies
+them with ELAN's Windows matching engine, loaded natively on x86-64 Linux
+(no Wine). This directory is not part of the Meson build and does not touch
+libfprint, fprintd, or the system configuration.
 
-## Tested hardware and engine
+## Requirements
 
-- USB `04f3:0c28`, firmware `0140`, sensor response `60 00 60 00`.
-- ELAN Windows driver `1.1.0.2111`, INF date `2017-07-07`.
-- `EngineAdapter.dll` SHA-256:
-  `8f9254d10594ff7479741e72d22abec9417807257ac0c7a967ec7eaa8865a9e9`.
-- The DLL is supplied separately, not committed to this repository.
+- Reader: USB `04f3:0c28`, firmware `0140`.
+- Engine: `EngineAdapter.dll` from ELAN Windows driver `1.1.0.2111` (2017-07-07),
+  SHA-256 `8f9254d10594ff7479741e72d22abec9417807257ac0c7a967ec7eaa8865a9e9`.
+  The DLL is not included in this repository.
+- GCC, make, Python 3 with NumPy and PyUSB, and access to the USB device with no
+  other program (such as fprintd) holding it.
 
-The PE loader is adapted from [OMGrant/ft9201-libfprint](https://github.com/OMGrant/ft9201-libfprint),
-commit `fcf5499c6ddadf0d2a03be14b173609e760a7ec6`, under LGPL-2.1-or-later.
-USB commands and normalization follow `libfprint/drivers/elan.c` and `elan.h`.
+## Usage
 
-## Build and use
-
-Dependencies: GCC, make, Python 3, NumPy, PyUSB, and libusb. The current user must
-have access to the USB device, and no other program may hold its interface.
-
-Run these commands from this directory. Set `ELAN_ENGINE_DLL` to the extracted
-Windows DLL's full path.
+Run from this directory:
 
 ```sh
 make
@@ -31,75 +24,88 @@ export ELAN_ENGINE_DLL=/path/to/EngineAdapter.dll
 ./probe "$ELAN_ENGINE_DLL" init
 ```
 
-For enrollment, leave the sensor empty during calibration. Then make 24 separate
-touches with the same finger, holding for about a second and lifting completely
-for a second. Vary the contact position slightly. Do not swipe.
+### Enroll
+
+Keep the sensor clear while `capture.py` calibrates. Then touch the sensor 24
+times with the same finger: hold for about a second, lift fully for a second,
+and shift the position slightly each time. Do not swipe.
 
 ```sh
 python3 capture.py captures/enroll --touches 24
 ./probe "$ELAN_ENGINE_DLL" enroll captures/finger.template \
-  captures/enroll/*-02.linear.raw 2>captures/enroll.matcher.log
+  captures/enroll/*-02.linear.raw 2>captures/enroll.log
 ```
 
-The engine decides when enrollment is complete; the tested run needed 18 touches.
-`probe` stops enrollment at that point, preserving later touches for independent
-verification. If more touches are needed, rerun enrollment with a larger capture
-set. Existing templates and capture directories are never overwritten.
+The engine decides when enrollment is complete (18 touches in testing); `probe`
+stops there and ignores the remaining frames. If it reports that more touches
+are needed, capture a larger set. Existing templates and capture directories are
+never overwritten.
 
-To verify live, again leave the sensor empty during calibration:
+### Verify
+
+Live, again keeping the sensor clear during calibration:
 
 ```sh
 python3 capture.py captures/verify --touches 6 \
   --verify captures/finger.template --dll "$ELAN_ENGINE_DLL"
 ```
 
-Each touch captures four frames. Verification checks frames 2–4 and reports a
-match if any one matches. Every frame is compared against the original saved
-enrollment, with engine template adaptation discarded. This avoids training on
-the samples being evaluated. Detailed matcher output is saved beside captures.
+A touch counts once four frames (about 0.8 s of contact) are captured; shorter
+touches are discarded with a message. A touch matches if any of frames 2–4 matches.
+Every frame is compared against the saved template, discarding the engine's
+template adaptation, so the frames under test never train the template.
+Matcher output for each touch is saved as `touch-NN.matcher.log`.
 
-Offline verification accepts any sequence of normalized 96×96 grayscale frames:
+Offline, with any normalized 96×96 8-bit grayscale frames:
 
 ```sh
 ./probe "$ELAN_ENGINE_DLL" verify captures/finger.template \
-  captures/verify/*-02.linear.raw 2>captures/verify.matcher.log
+  captures/verify/*-02.linear.raw 2>captures/verify.log
 ```
 
-Exit status is 0 for successful initialization/enrollment or all frames matching,
-1 for incomplete enrollment or one or more nonmatching/rejected frames, and 2 for
-errors. Unimplemented Windows calls abort with the call name.
+`probe` exits with 0 on success (initialized, enrolled, or all frames matched),
+1 if enrollment is incomplete or any frame did not match, and 2 on errors.
+Engine logs go to stderr.
 
-## What is implemented
+## How it works
 
-- File-backed PE section mapping without writable executable pages; the TEB is
-  installed before TLS callbacks and the DLL entry point run.
-- WinBio attach, enrollment, template storage, verification, and detach through
-  the DLL's interface, without private engine-context writes.
-- ELAN sensor control `0x442080` returns two 32-bit dimensions (96, 96), as
-  confirmed in `WbfUsbDriver.dll`.
-- ELAN's BIR parser reads width/height at sample-block offsets `0x1c`/`0x1e` and
-  grayscale pixels at `0x38`. FocalTech's geometry and private offsets do not apply.
-- Full 16-bit USB frames, background subtraction, and linear conversion to 8-bit
-  grayscale. The current swipe driver's cropping and stitching are not used.
-- Empty-sensor filtering: firmware can return `0x55` for empty captures; the
-  harness requires the 90th percentile of the subtracted image to exceed 500.
-  This threshold separates touches in this experiment, not an OEM quality check.
+- `pe-loader.c` (adapted from [OMGrant/ft9201-libfprint](https://github.com/OMGrant/ft9201-libfprint)
+  at `fcf5499c6ddadf0d2a03be14b173609e760a7ec6`, LGPL-2.1-or-later) maps the
+  DLL without W+X pages, sets up a TEB, and runs its TLS callbacks and DllMain.
+  Windows calls are shimmed just enough for this engine; unexpected ones abort
+  with the call name.
+- `probe.c` drives the WinBio engine interface (attach, enroll, commit, verify,
+  detach) with stub sensor and storage adapters. The only sensor control the
+  engine uses is `0x442080`, which returns the 96×96 dimensions, as in
+  `WbfUsbDriver.dll`. Unlike FocalTech's engine, ELAN's reads the frame size
+  from the ANSI 381 header at offsets `0x1c`/`0x1e` of the sample block.
+- `capture.py` uses the commands from `libfprint/drivers/elan.h` to read full
+  16-bit frames, subtracts the calibration background, and stretches the result
+  to 8-bit grayscale. It does not use the swipe driver's cropping or stitching.
+  The firmware reports a finger even on an empty sensor, so a touch is detected
+  when the 90th percentile of the subtracted frame exceeds 500. This threshold
+  is tuned for this reader, not an OEM quality check.
 
-Raw captures, normalized images, templates, and logs stay under the ignored
-`captures/` directory. New captures use private file permissions. They contain
-fingerprint data and are not included in source control.
+Captures, templates, and logs contain fingerprint data. Keep them under
+`captures/`, which is ignored by git; new captures are only readable by you.
 
-## Initial hardware results
+## Results
 
-On 2026-10-08, one frame per touch from touches 1–18 produced a 10,242-byte
-template. In a new matcher process, 5/6 held-out same-finger touches matched.
-Using three frames per touch produced the same 5/6 result (15/18 frames).
-All 8 touches with a different finger were rejected (0/24 frames matched).
-After fresh calibration, all 6 new touches with the original finger matched
-(18/18 frames), reusing the same saved enrollment in a new process for each touch.
-These are small functional checks on one reader, not an accuracy benchmark.
+Tested on 2026-10-08 with one reader:
 
-This is a single-threaded development harness. The loader still has deliberately
-limited Windows shims; it is not ready to be embedded in fprintd. A libfprint
-driver needs proper lifecycle/error handling, capture quality/retry behavior,
-and opaque-template integration through `FpDevice` before installation.
+- Enrolling with one frame from each of touches 1–18 gave a 10,242-byte template.
+- In a fresh process, 5 of 6 held-out touches of the same finger matched (one
+  frame per touch). With three frames per touch, the result was also 5/6
+  (15/18 frames).
+- All 8 touches of a different finger were rejected (0/24 frames).
+- After recalibrating, 6/6 new touches of the enrolled finger matched (18/18
+  frames).
+
+This is a small functional check, not an accuracy benchmark.
+
+## Limitations
+
+This is a single-threaded development harness and the Windows shims are
+minimal, so it is not suitable for fprintd. A libfprint driver would also need
+proper lifecycle and error handling, capture quality checks and retries, and
+opaque template storage through `FpDevice`.
