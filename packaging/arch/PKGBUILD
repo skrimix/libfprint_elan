@@ -1,0 +1,81 @@
+# Based on the Arch Linux libfprint package by
+# Jan Alexander Steffens (heftig) <heftig@archlinux.org>, Tom Gundersen <teg@jklm.no>
+# and Thomas Baechler <thomas@archlinux.org>
+
+pkgname=libfprint-elan-oem-git
+_pkgname=libfprint
+pkgver=1.94.100.r14.g69a66678
+pkgrel=1
+pkgdesc="Library for fingerprint readers, with ELAN 04f3:0c28 support using ELAN's matching engine"
+url="https://github.com/skrimix/libfprint_elan"
+arch=(x86_64)
+license=(LGPL-2.1-or-later LicenseRef-ELAN-EULA)
+depends=(
+  libgcc
+  glib2
+  glibc
+  libgudev
+  libgusb
+  openssl
+  pixman
+)
+makedepends=(
+  git
+  glib2-devel
+  gobject-introspection
+  gtk-doc
+  meson
+  python-cairo
+  python-gobject
+  systemd
+)
+checkdepends=(
+  cairo
+  umockdev
+)
+provides=("libfprint=${pkgver%%.r*}" libfprint-2.so)
+conflicts=(libfprint)
+groups=(fprint)
+source=(
+  "$_pkgname::git+https://github.com/skrimix/libfprint_elan.git#branch=master"
+  # ELAN Windows driver 1.1.0.2111, for EngineAdapter.dll
+  "elan-wbf-1.1.0.2111.cab::https://catalog.s.download.windowsupdate.com/c/msdownload/update/driver/drvs/2017/07/2553b5f6-cd54-4cb2-a552-c4ee4d4ebe9a_4394725e4cd2b8d73ab385804e2f9e1e760a4e28.cab"
+)
+noextract=(elan-wbf-1.1.0.2111.cab)
+b2sums=('SKIP'
+        'e90eab359c6ecb190e1389e42cf9e109e71d75ce81900583a363e87a990d934364f662e947966536187594eb92f224a63ca764e90976c3f75446e1879aaaa558')
+
+pkgver() {
+  cd $_pkgname
+  git describe --long --tags --abbrev=8 | sed 's/^v//;s/\([^-]*-g\)/r\1/;s/-/./g'
+}
+
+prepare() {
+  mkdir -p elan
+  bsdtar -xf elan-wbf-1.1.0.2111.cab -C elan EngineAdapter.dll Eula0409ENU.tx_
+}
+
+build() {
+  local meson_options=(
+    # Add virtual drivers for integration tests (e.g. in fprintd)
+    -D drivers=all
+
+    -D installed-tests=false
+  )
+
+  arch-meson $_pkgname build "${meson_options[@]}"
+  meson compile -C build
+}
+
+check() {
+  meson test -C build --print-errorlogs
+}
+
+package() {
+  meson install -C build --destdir "$pkgdir"
+
+  install -Dm644 elan/EngineAdapter.dll -t "$pkgdir/usr/lib/libfprint-2/elan_oem"
+  install -Dm644 elan/Eula0409ENU.tx_ "$pkgdir/usr/share/licenses/$pkgname/ELAN-EULA"
+}
+
+# vim:set sw=2 sts=-1 et:
