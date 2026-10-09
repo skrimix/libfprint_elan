@@ -111,6 +111,9 @@ gobject_introspection = dependency('gobject-introspection-1.0', required: get_op
 # SPI
 have_spi = host_machine.system() == 'linux'
 
+# elan_oem loads ELAN's Windows matching engine, which needs x86-64 Linux
+have_elan_oem_engine = host_machine.cpu_family() == 'x86_64' and host_machine.system() == 'linux'
+
 # Drivers
 drivers = get_option('drivers').split(',')
 
@@ -136,8 +139,7 @@ drivers_info = {
     'synaptics': {},
     'elan': { 'endian_dependent': true },
     'elanmoc': {},
-    # Loads ELAN's Windows matching engine, which needs x86-64 Linux
-    'elan_oem': { 'optional': host_machine.cpu_family() != 'x86_64' or host_machine.system() != 'linux' },
+    'elan_oem': { 'optional': not have_elan_oem_engine },
     'uru4000': { 'helper': ['openssl'] },
     'upektc': {},
     'upeksonly': {},
@@ -186,6 +188,10 @@ if not have_spi
             error('SPI driver @0@ is not supported'.format(driver))
         endif
     endforeach
+endif
+
+if not have_elan_oem_engine and 'elan_oem' in drivers
+    error('Driver elan_oem needs x86-64 Linux')
 endif
 
 driver_helpers = []
@@ -284,6 +290,11 @@ foreach driver: drivers
 endforeach
 
 if default_drivers_are_enabled and supported_drivers != drivers
+    default_drivers_are_enabled = false
+endif
+
+# The committed hwdb includes elan_oem, which this host cannot build
+if not have_elan_oem_engine
     default_drivers_are_enabled = false
 endif
 

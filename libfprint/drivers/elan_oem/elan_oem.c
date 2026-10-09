@@ -92,11 +92,11 @@ struct _FpiDeviceElanOem
   GPtrArray        *templates; /* GBytes for each print to verify or identify */
 
   /* Results reported once the sensor is stopped */
-  GError           *error;
-  FpPrint          *enrolled;
-  FpiMatchResult    match;
-  guint             match_index; /* into templates */
-  GError           *retry;
+  GError        *error;
+  FpPrint       *enrolled;
+  FpiMatchResult match;
+  guint          match_index;    /* into templates */
+  GError        *retry;
 };
 
 G_DECLARE_FINAL_TYPE (FpiDeviceElanOem, fpi_device_elan_oem, FPI, DEVICE_ELAN_OEM, FpDevice);
@@ -246,7 +246,7 @@ enroll_touch (FpiDeviceElanOem *self, FpiSsm *ssm)
   return TRUE;
 }
 
-/* Verify and identify: compares the frame with each template.
+/* Compares the frame with each template, for verify and identify.
  * Returns TRUE when done, after a match or an engine error. */
 static gboolean
 match_frame (FpiDeviceElanOem *self, FpiSsm *ssm)
@@ -485,6 +485,8 @@ stop_complete (FpiSsm *ssm, FpDevice *dev, GError *error)
 
   if (fpi_device_get_current_action (dev) == FPI_DEVICE_ACTION_ENROLL)
     {
+      if (self->error)
+        elan_engine_enroll_discard ();
       fpi_device_enroll_complete (dev, self->error ? NULL : g_steal_pointer (&self->enrolled),
                                   g_steal_pointer (&self->error));
       g_clear_object (&self->enrolled);
@@ -651,12 +653,22 @@ static void
 dev_open (FpDevice *dev)
 {
   const char *path = g_getenv ("ELAN_OEM_ENGINE_DLL");
+
   g_autoptr(GError) engine_error = NULL;
   GError *error = NULL;
+  int r = ELAN_ENGINE_ERROR;
 
   if (!path)
     path = ENGINE_DLL_DEFAULT;
-  if (!check_engine (path, &engine_error) || elan_engine_open (path))
+  if (check_engine (path, &engine_error))
+    r = elan_engine_open (path);
+  if (r == ELAN_ENGINE_BUSY)
+    {
+      fpi_device_open_complete (dev, fpi_device_error_new_msg (FP_DEVICE_ERROR_BUSY,
+                                                               "The ELAN matching engine is in use by another reader"));
+      return;
+    }
+  if (r)
     {
       fpi_device_open_complete (dev, fpi_device_error_new_msg (FP_DEVICE_ERROR_GENERAL,
                                                                "Cannot load ELAN matching engine (set ELAN_OEM_ENGINE_DLL): %s",

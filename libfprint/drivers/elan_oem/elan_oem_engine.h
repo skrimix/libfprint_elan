@@ -14,10 +14,13 @@
 #define ELAN_ENGINE_DONE 3 // enrollment complete, commit it
 #define ELAN_ENGINE_BAD 4  // the engine rejected the frame
 #define ELAN_ENGINE_ERROR -1
+#define ELAN_ENGINE_BUSY -2 // another reader has the engine open
 
 // Loads the DLL on first use (it stays mapped for the life of the process) and
-// attaches a pipeline. Returns 0 or ELAN_ENGINE_ERROR.
+// attaches a pipeline. Only one reader can have the engine open at a time.
+// Returns 0, ELAN_ENGINE_BUSY or ELAN_ENGINE_ERROR.
 int elan_engine_open(const char *dll_path);
+// Detaches the pipeline; does nothing if the engine is not open.
 void elan_engine_close(void);
 
 int elan_engine_enroll_begin(void);
@@ -25,6 +28,8 @@ int elan_engine_enroll_begin(void);
 int elan_engine_enroll_add(const uint8_t *frame);
 // On success returns 0 and a malloc'd template the caller frees.
 int elan_engine_enroll_commit(uint8_t **tmpl, size_t *len);
+// Ends an enrollment that was not committed, so that matching works again.
+void elan_engine_enroll_discard(void);
 
 // Extracts features from a frame for elan_engine_verify: 0, ELAN_ENGINE_BAD
 // or _ERROR.

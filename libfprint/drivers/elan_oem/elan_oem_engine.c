@@ -79,11 +79,13 @@ static u32(MS *create_enrollment)(void *);
 static u32(MS *update_enrollment)(void *, u32 *);
 static u32(MS *enrollment_status)(void *, u32 *);
 static u32(MS *commit_enrollment)(void *, void *, u8, void *, u64);
+static u32(MS *discard_enrollment)(void *);
 
 // Adapter interface tables, indexed by byte offset of each method.
 static void *sensor[64], *storage[64];
 // WINBIO_PIPELINE; the engine stores its context in it during attach.
 static void *pipeline[128];
+static int attached; // the pipeline belongs to an open reader
 // WINBIO_BIR: a WINBIO_BIR_HEADER followed by an ANSI 381 standard data block.
 static u8 bir[0x80 + ELAN_ENGINE_FRAME_SIZE];
 
@@ -113,6 +115,7 @@ static int load(const char *dll_path) {
   update_enrollment = methods[13];
   enrollment_status = methods[14];
   commit_enrollment = methods[17];
+  discard_enrollment = methods[18];
 
   for (int i = 0; i < 64; i++)
     sensor[i] = storage[i] = (void *)unsupported_callback;
@@ -140,6 +143,11 @@ static int load(const char *dll_path) {
 
 int elan_engine_open(const char *dll_path) {
   static int loaded;
+  // There is a single pipeline, so a second reader must not replace it.
+  if (attached) {
+    fprintf(stderr, "ELAN engine: already in use\n");
+    return ELAN_ENGINE_BUSY;
+  }
   if (!loaded) {
     if (load(dll_path))
       return ELAN_ENGINE_ERROR;
@@ -154,14 +162,20 @@ int elan_engine_open(const char *dll_path) {
   pipeline[5] = storage;    // StorageInterface
   template_size = 0;
   u32 hr = attach(pipeline);
-  return hr ? fail("Attach", hr) : 0;
+  if (hr)
+    return fail("Attach", hr);
+  attached = 1;
+  return 0;
 }
 
 void elan_engine_close(void) {
+  if (!attached)
+    return;
   set_gs();
   u32 hr = detach(pipeline);
   if (hr)
     fail("Detach", hr);
+  attached = 0;
 }
 
 // Hands a frame to AcceptSampleData: 0, ELAN_ENGINE_BAD or ELAN_ENGINE_ERROR.
@@ -210,6 +224,13 @@ int elan_engine_enroll_commit(uint8_t **tmpl, size_t *len) {
   memcpy(*tmpl, template_data, template_size);
   *len = template_size;
   return 0;
+}
+
+void elan_engine_enroll_discard(void) {
+  set_gs();
+  u32 hr = discard_enrollment(pipeline);
+  if (hr)
+    fail("DiscardEnrollment", hr);
 }
 
 int elan_engine_accept(const uint8_t *frame) {
