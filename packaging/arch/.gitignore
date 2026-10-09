@@ -1,0 +1,7 @@
+# makepkg sources and output
+/libfprint/
+/src/
+/pkg/
+*.cab
+*.pkg.tar*
+*.log

@@ -4,7 +4,7 @@
 
 pkgname=libfprint-elan-oem-git
 _pkgname=libfprint
-pkgver=1.94.100.r14.g69a66678
+pkgver=1.94.100.r2079.ge3ac5ea1
 pkgrel=1
 pkgdesc="Library for fingerprint readers, with ELAN 04f3:0c28 support using ELAN's matching engine"
 url="https://github.com/skrimix/libfprint_elan"
@@ -45,9 +45,12 @@ noextract=(elan-wbf-1.1.0.2111.cab)
 b2sums=('SKIP'
         'e90eab359c6ecb190e1389e42cf9e109e71d75ce81900583a363e87a990d934364f662e947966536187594eb92f224a63ca764e90976c3f75446e1879aaaa558')
 
+# The fork does not carry upstream's tags, so take the version from meson.build
 pkgver() {
   cd $_pkgname
-  git describe --long --tags --abbrev=8 | sed 's/^v//;s/\([^-]*-g\)/r\1/;s/-/./g'
+  local version
+  version=$(sed -n "s/^ *version: '\([^']*\)',$/\1/p" meson.build | head -n1)
+  printf "%s.r%s.g%s" "$version" "$(git rev-list --count HEAD)" "$(git rev-parse --short=8 HEAD)"
 }
 
 prepare() {
