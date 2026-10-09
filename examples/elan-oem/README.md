@@ -3,7 +3,15 @@
 Captures single touches on the 96×96 ELAN 04f3:0c28 reader and enrolls/verifies
 them with ELAN's Windows matching engine, loaded natively on x86-64 Linux
 (no Wine). This directory is not part of the Meson build and does not touch
-libfprint, fprintd, or the system configuration.
+fprintd or the system configuration.
+
+The same engine glue backs the `elan_oem` libfprint driver
+(`libfprint/drivers/elan_oem/`), which owns `04f3:0c28` and is built by default
+on x86-64 Linux. It loads the DLL from `ELAN_OEM_ENGINE_DLL`, or from
+`/usr/lib/libfprint-2/elan_oem/EngineAdapter.dll` by default, and fails to open
+the device if the file is missing or is not the build below. Unlike
+`capture.py`, the driver does not wait for four frames: enrollment uses frame 2
+of each touch, and verify and identify try frames 2 to 4 as they arrive.
 
 ## Requirements
 
@@ -69,13 +77,14 @@ Engine logs go to stderr.
 
 ## How it works
 
-- `pe-loader.c` (adapted from [OMGrant/ft9201-libfprint](https://github.com/OMGrant/ft9201-libfprint)
+- `libfprint/drivers/elan_oem/pe-loader.c` (adapted from [OMGrant/ft9201-libfprint](https://github.com/OMGrant/ft9201-libfprint)
   at `fcf5499c6ddadf0d2a03be14b173609e760a7ec6`, LGPL-2.1-or-later) maps the
   DLL without W+X pages, sets up a TEB, and runs its TLS callbacks and DllMain.
   Windows calls are shimmed just enough for this engine; unexpected ones abort
   with the call name.
-- `probe.c` drives the WinBio engine interface (attach, enroll, commit, verify,
-  detach) with stub sensor and storage adapters. The only sensor control the
+- `libfprint/drivers/elan_oem/elan_oem_engine.c` drives the WinBio engine
+  interface (attach, enroll, commit, verify, detach) with stub sensor and
+  storage adapters; `probe.c` runs it on saved frames. The only sensor control the
   engine uses is `0x442080`, which returns the 96×96 dimensions, as in
   `WbfUsbDriver.dll`. Unlike FocalTech's engine, ELAN's reads the frame size
   from the ANSI 381 header at offsets `0x1c`/`0x1e` of the sample block.
@@ -105,7 +114,13 @@ This is a small functional check, not an accuracy benchmark.
 
 ## Limitations
 
-This is a single-threaded development harness and the Windows shims are
-minimal, so it is not suitable for fprintd. A libfprint driver would also need
-proper lifecycle and error handling, capture quality checks and retries, and
-opaque template storage through `FpDevice`.
+The engine state is global, so one reader per process, and only x86-64 Linux is
+supported. The Windows shims are minimal: a Windows call the engine is not
+expected to make aborts the process, including fprintd. `elan_oem` captures the
+same way as `capture.py`, so keep the sensor clear while an operation starts.
+
+On Windows, the engine updates the stored template after successful matches
+(template adaptation) to follow slow changes such as dry skin. `elan_oem` always
+matches against the template from enrollment, because libfprint has no way to
+hand an updated template back to fprintd. Re-enroll the finger if matching gets
+worse over time.

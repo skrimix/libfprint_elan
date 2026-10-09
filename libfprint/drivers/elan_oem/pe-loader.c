@@ -4,7 +4,7 @@
 // a fake TEB, and runs TLS callbacks and DllMain. Imports without a shim fail the
 // load; shims for calls the engine is not expected to make abort when called.
 #if !defined(__linux__) || !defined(__x86_64__)
-#error "The ELAN OEM matcher harness requires x86-64 Linux"
+#error "The ELAN OEM matcher requires x86-64 Linux"
 #endif
 
 #ifndef _GNU_SOURCE
@@ -44,6 +44,9 @@ static void *g_tls_array[64];
 static u8 g_tls_block[0x2000];
 
 static void *find_shim(const char *name);
+
+// %gs is per thread, so point it at the fake TEB before every call into the engine.
+static int set_gs(void) { return syscall(SYS_arch_prctl, ARCH_SET_GS, g_teb); }
 
 // ================= SHIMS (all MS ABI) =================
 // Calls the engine is not expected to make: fail loudly instead of faking success.
@@ -389,7 +392,10 @@ static int MS sh_wsprintfW(u16 *out, const u16 *format, ...) {
     spec[n++] = *format++;
     spec[n] = 0;
     u32 value = __builtin_va_arg(args, u32);
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wformat-nonliteral" // spec was validated above
     int count = snprintf(number, sizeof number, spec, value);
+#pragma GCC diagnostic pop
     if (count < 0 || count >= (int)sizeof number)
       abort();
     for (int i = 0; i < count; i++)
@@ -702,7 +708,7 @@ static int load_pe(const char *path) {
   *(u64 *)(g_teb + 0x10) = (u64)g_teb;                 // NtTib.StackLimit
   *(u64 *)(g_teb + 0x58) = (u64)g_tls_array;           // ThreadLocalStoragePointer
   *(u64 *)(g_teb + 0x60) = (u64)g_peb;                 // ProcessEnvironmentBlock
-  if (syscall(SYS_arch_prctl, ARCH_SET_GS, g_teb) != 0) {
+  if (set_gs() != 0) {
     perror("arch_prctl(ARCH_SET_GS)");
     return -1;
   }

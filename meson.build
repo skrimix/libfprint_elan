@@ -136,6 +136,8 @@ drivers_info = {
     'synaptics': {},
     'elan': { 'endian_dependent': true },
     'elanmoc': {},
+    # Loads ELAN's Windows matching engine, which needs x86-64 Linux
+    'elan_oem': { 'optional': host_machine.cpu_family() != 'x86_64' or host_machine.system() != 'linux' },
     'uru4000': { 'helper': ['openssl'] },
     'upektc': {},
     'upeksonly': {},
