@@ -46,6 +46,10 @@
  * this. Tuned for this reader, not an OEM quality check. */
 #define PRESENCE_THRESHOLD 500
 #define POLL_INTERVAL 80
+/* The sensor stops sending frames when the finger is lifted instead of sending
+ * an empty one, so a pause this long (in microseconds) between finger frames
+ * also ends the touch, as NEW_TOUCH_GAP does in examples/elan-oem/capture.py. */
+#define NEW_TOUCH_GAP 800000
 /* The first frame of a touch is often taken while pressing down, so enrollment
  * uses frame 2 (about 0.4 s of contact), and matching tries frames 2 to 4 as
  * they arrive until one matches or the finger is lifted. */
@@ -85,6 +89,7 @@ struct _FpiDeviceElanOem
 
   guint             touch_frames; /* consecutive frames with a finger */
   gboolean          touch_done;   /* this touch was handled, wait for a lift */
+  gint64            last_finger;  /* monotonic time of the last frame with a finger */
   guint             bad_frames;   /* frames of this touch the engine rejected */
   guint8            frame[FRAME_SIZE];
 
@@ -293,6 +298,41 @@ match_failed (FpiDeviceElanOem *self, FpiSsm *ssm)
   fpi_ssm_mark_completed (ssm);
 }
 
+/* The finger was lifted. Returns TRUE when that completed the operation. */
+static gboolean
+end_touch (FpiDeviceElanOem *self, FpiSsm *ssm)
+{
+  FpDevice *dev = FP_DEVICE (self);
+  gboolean is_enroll = fpi_device_get_current_action (dev) == FPI_DEVICE_ACTION_ENROLL;
+
+  if (self->touch_frames)
+    fpi_device_report_finger_status_changes (dev, FP_FINGER_STATUS_NONE,
+                                             FP_FINGER_STATUS_PRESENT);
+  if (self->touch_frames >= FIRST_USED_FRAME && !self->touch_done)
+    {
+      /* Lifted while matching */
+      match_failed (self, ssm);
+      return TRUE;
+    }
+  if (self->touch_frames && !self->touch_done)
+    {
+      GError *retry = fpi_device_retry_new (FP_DEVICE_RETRY_TOO_SHORT);
+
+      fp_dbg ("Touch too short");
+      if (!is_enroll)
+        {
+          self->match = FPI_MATCH_ERROR;
+          self->retry = retry;
+          fpi_ssm_mark_completed (ssm);
+          return TRUE;
+        }
+      fpi_device_enroll_progress (dev, self->enroll_stage, NULL, retry);
+    }
+  self->touch_frames = 0;
+  self->touch_done = FALSE;
+  return FALSE;
+}
+
 enum capture_states {
   CAPTURE_GET_BACKGROUND,
   CAPTURE_GET_MEAN,
@@ -313,6 +353,8 @@ capture_run_state (FpiSsm *ssm, FpDevice *dev)
   gboolean is_enroll = fpi_device_get_current_action (dev) == FPI_DEVICE_ACTION_ENROLL;
   guint32 bg_mean = 0;
   guint16 calib_mean;
+  gboolean present;
+  gint64 now;
 
   switch (fpi_ssm_get_cur_state (ssm))
     {
@@ -386,33 +428,21 @@ capture_run_state (FpiSsm *ssm, FpDevice *dev)
       break;
 
     case CAPTURE_PROCESS_IMAGE:
-      if (!process_frame (self))
+      present = process_frame (self);
+      now = g_get_monotonic_time ();
+      if (present && self->touch_frames && now - self->last_finger >= NEW_TOUCH_GAP)
         {
-          if (self->touch_frames)
-            fpi_device_report_finger_status_changes (dev, FP_FINGER_STATUS_NONE,
-                                                     FP_FINGER_STATUS_PRESENT);
-          if (self->touch_frames >= FIRST_USED_FRAME && !self->touch_done)
-            {
-              /* Lifted while matching */
-              match_failed (self, ssm);
-              return;
-            }
-          if (self->touch_frames && !self->touch_done)
-            {
-              GError *retry = fpi_device_retry_new (FP_DEVICE_RETRY_TOO_SHORT);
-
-              fp_dbg ("Touch too short");
-              if (!is_enroll)
-                {
-                  self->match = FPI_MATCH_ERROR;
-                  self->retry = retry;
-                  fpi_ssm_mark_completed (ssm);
-                  return;
-                }
-              fpi_device_enroll_progress (dev, self->enroll_stage, NULL, retry);
-            }
-          self->touch_frames = 0;
-          self->touch_done = FALSE;
+          fp_dbg ("No finger frame for %" G_GINT64_FORMAT " us, starting a new touch",
+                  now - self->last_finger);
+          if (end_touch (self, ssm))
+            return;
+        }
+      if (present)
+        self->last_finger = now;
+      if (!present)
+        {
+          if (end_touch (self, ssm))
+            return;
         }
       else if (!self->touch_done && ++self->touch_frames == 1)
         {
